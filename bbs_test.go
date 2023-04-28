@@ -9,21 +9,37 @@ import (
 )
 
 func TestSign(t *testing.T) {
+	var message = []byte("hello,john")
+	
+	_, priv, _ := bbs.GenerateKeyPair(sha256.New, nil)
+	bbsins := bbs.NewBbs()
+
+	signature, err := bbsins.SignWithKey([][]byte{message}, priv)
+	require.NoError(t, err)
+	pubkeyBytes, err := priv.PublicKey().Marshal()
+	require.NoError(t, err)
+
+	err = bbsins.Verify([][]byte{message}, signature, pubkeyBytes)
+	require.NoError(t, err)
+	invalidMessage := append(message, byte('!'))
+	err = bbsins.Verify([][]byte{invalidMessage}, signature, pubkeyBytes)
+	require.Error(t, err)
+	invalidSignature := append(signature, byte('!'))
+	err = bbsins.Verify([][]byte{invalidMessage}, invalidSignature, pubkeyBytes)
+	require.Error(t, err)
+	invalidPubkey := append(pubkeyBytes, byte('!'))
+	err = bbsins.Verify([][]byte{invalidMessage}, invalidSignature, invalidPubkey)
+	require.Error(t, err)
+}
+
+func TestBlindSign(t *testing.T) {
 	// 서명자 키 생성..
 	_, issuerPrivateKey, err := bbs.GenerateKeyPair(sha256.New, nil)
-	if err != nil {
-		panic(err)
-	}
-	/*
-		issuerPrivateKeyBytes, err := hex.DecodeString("4b47459199b0c2210de9d28c1412551c28c57caae60872aa677bc9af2038d22b")
-		require.NoError(t, err)
-
-		issuerPrivateKey, err := bbs.UnmarshalPrivateKey(issuerPrivateKeyBytes)
-		require.NoError(t, err)
-	*/
+	require.NoError(t, err)
 
 	// 발행자는 본인의 공개키를 이용하여, issuerGenerators 및 nonce를 생성하여, holder에게 전달..
-	issuerGenerators, err := issuerPrivateKey.PublicKey().ToPublicKeyWithGenerators(25)
+	messageCount := 25
+	issuerGenerators, err := issuerPrivateKey.PublicKey().ToPublicKeyWithGenerators(messageCount)
 	require.NoError(t, err)
 
 	nonce := bbs.NewProofNonce()
@@ -38,26 +54,17 @@ func TestSign(t *testing.T) {
 	require.False(t, blinding.IsZero())
 	require.NotNil(t, ctx)
 
-	//require.False(t, ctx.challenge)
-
 	//  holder는 생성한 ctx(blind 서명정보)를 marshaling을 통하여 발행자에게 전달..
 	// marshal/unmarshal test
 	ctxBytes := ctx.ToBytes()
 	require.NotNil(t, ctxBytes)
+
 	nctx := new(bbs.BlindSignatureContext)
 	err = nctx.FromBytes(ctxBytes)
 	require.NoError(t, err)
 
-	//require.True(t, ctx.challenge.Equal(nctx.challenge))
-	//require.True(t, g1.Equal(ctx.commitment, nctx.commitment))
-	//require.True(t, g1.Equal(ctx.proofs.commitment, nctx.proofs.commitment))
-	//for i, v := range ctx.proofs.responses {
-	//	require.True(t, v.Equal(nctx.proofs.responses[i]))
-	//}
-
 	// 발행자는 자신에게 홀더로부터 받은 내용을 포함하여 서명을 실행
 	// holder로 부터 전송받은 ctx에 추가하는 방식
-	// signer use known message with index to create blinding signature
 	revealedMsg := make(map[int][]byte, 0)
 	revealedMsg[0] = []byte(`_:c14n0 <http://purl.org/dc/terms/created> "2019-12-03T12:19:52Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .`)
 	revealedMsg[1] = []byte(`_:c14n0 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/security#BbsBlsSignature2020> .`)
@@ -96,12 +103,7 @@ func TestSign(t *testing.T) {
 
 	// 전체 내용에 대하여 서명이 이루어 졌는지 확인...
 	// verifier verify signature
-	allMsg := make([]*bbs.SignatureMessage, 25)
-	// allMsg[0] = ParseSignatureMessage([]byte("identity"))
-	// allMsg[1] = ParseSignatureMessage([]byte("firstname"))
-	// allMsg[2] = ParseSignatureMessage([]byte("password"))
-	// allMsg[3] = ParseSignatureMessage([]byte("age"))
-	// allMsg[4] = ParseSignatureMessage([]byte("phone number"))
+	allMsg := make([]*bbs.SignatureMessage, messageCount)
 	allMsg[0] = bbs.ParseSignatureMessage([]byte(`_:c14n0 <http://purl.org/dc/terms/created> "2019-12-03T12:19:52Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .`))
 	allMsg[1] = bbs.ParseSignatureMessage([]byte(`_:c14n0 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/security#BbsBlsSignature2020> .`))
 	allMsg[2] = bbs.ParseSignatureMessage([]byte(`_:c14n0 <https://w3id.org/security#proofPurpose> <https://w3id.org/security#assertionMethod> .`))
@@ -128,7 +130,7 @@ func TestSign(t *testing.T) {
 	allMsg[23] = bbs.ParseSignatureMessage([]byte(`<https://issuer.oidp.uscis.gov/credentials/83627465> <https://www.w3.org/2018/credentials#issuanceDate> "2019-12-03T12:19:52Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .`))
 	allMsg[24] = bbs.ParseSignatureMessage([]byte(`<https://issuer.oidp.uscis.gov/credentials/83627465> <https://www.w3.org/2018/credentials#issuer> <did:example:489398593> .`))
 
-	// 발행자의 공개키로 전체 내용이 서명되었는지 확인
+	// 발행자의 issuerGenerators를 이ㅇㅏ여 전체 내용이 서명 검증
 	err = sig.Verify(allMsg, issuerGenerators)
 	require.NoError(t, err)
 
@@ -139,6 +141,10 @@ func TestSign(t *testing.T) {
 	require.NoError(t, err)
 	sigBlinding := bbs.NewSignatureBliding()
 	pokProof := pokSig.GenerateProof(sigBlinding.Fr)
+	byteSigBlinding := sigBlinding.ToBytes();
+
+	nSigBlinding := bbs.NewSignatureBliding()
+	nSigBlinding.FromBytes(byteSigBlinding)
 
 	// 전체 메시지중 검증자에게 전달할 메시지가 몇번째 메시지인지 표시
 	revMsg := make(map[int]*bbs.SignatureMessage, 0)
@@ -162,6 +168,6 @@ func TestSign(t *testing.T) {
 	pokMsg[4] = bbs.ParseSignatureMessage([]byte(`<did:example:b34ca6cd37bbf23> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/citizenship#PermanentResident> .`))
 
 	// 검증자는 공개된 메시지에 발행자가 서명하였는지 검증..
-	err = pokProof.Verify(sigBlinding.Fr, issuerGenerators, revMsg, pokMsg)
+	err = pokProof.Verify(nSigBlinding.Fr, issuerGenerators, revMsg, pokMsg)
 	require.NoError(t, err)
 }
